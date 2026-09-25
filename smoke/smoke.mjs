@@ -125,6 +125,50 @@ async function main() {
       body: '{not-json',
     });
     check('非法 JSON 400', junkResp.status === 400, `status=${junkResp.status}`);
+
+    console.log('8) POST /api/fixture-plans 超大但有限的坐标场景');
+    // 坐标 ~1e307：外方形候选（1e307）的最小裕量严格大于内方形（9e306），
+    // 必须唯一选出候选编号 [2,2,2,2]，且全部裕量为有限数值（不得为 null）。
+    const hugeResp = await fetch(`${BASE}/api/fixture-plans`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        rails: [
+          [{ x: -9e306, y: -9e306 }, { x: -1e307, y: -1e307 }],
+          [{ x: 9e306, y: -9e306 }, { x: 1e307, y: -1e307 }],
+          [{ x: 9e306, y: 9e306 }, { x: 1e307, y: 1e307 }],
+          [{ x: -9e306, y: 9e306 }, { x: -1e307, y: 1e307 }],
+        ],
+        boundary: [
+          { x: -1.1e307, y: -1.1e307 }, { x: 1.1e307, y: -1.1e307 },
+          { x: 1.1e307, y: 1.1e307 }, { x: -1.1e307, y: 1.1e307 },
+        ],
+        cg: { x: 0, y: 0 },
+        toleranceX: 0,
+        toleranceY: 0,
+        minSpacing: 1,
+      }),
+    });
+    check('返回 200', hugeResp.status === 200, `status=${hugeResp.status}`);
+    const huge = await hugeResp.json();
+    check('feasible=true', huge.feasible === true);
+    check(
+      '唯一选择外方形候选编号 [2,2,2,2]',
+      JSON.stringify(huge.selection?.map((s) => s.candidateNumber)) === '[2,2,2,2]',
+      `got=${JSON.stringify(huge.selection?.map((s) => s.candidateNumber))}`
+    );
+    const nearOuter = (v) => Number.isFinite(v) && Math.abs(v - 1e307) <= 1e307 * 1e-6;
+    check(
+      '四个角点裕量均为有限数值且约为 1e307',
+      huge.corners?.length === 4 && huge.corners.every((c) => nearOuter(c.margin)),
+      `got=${JSON.stringify(huge.corners?.map((c) => c.margin))}`
+    );
+    check(
+      'metrics.minMargin 为有限数值且约为 1e307',
+      nearOuter(huge.metrics?.minMargin),
+      `got=${huge.metrics?.minMargin}`
+    );
+    check('外方形裕量严格大于内方形约 9e306', huge.metrics?.minMargin > 9e306);
   } catch (err) {
     console.error(`冒烟执行异常：${err.stack || err.message}`);
     failures++;

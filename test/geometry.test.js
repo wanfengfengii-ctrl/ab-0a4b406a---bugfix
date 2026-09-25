@@ -45,3 +45,40 @@ test('pointInPolygon 含边界', () => {
   assert.equal(pointInPolygon(poly, { x: 4, y: 2 }), true);
   assert.equal(pointInPolygon(poly, { x: 5, y: 2 }), false);
 });
+
+test('超大坐标（~1e307）下有符号距离保持有限', () => {
+  const d = 1e307;
+  const hull = ensureCCW(convexHull([
+    { x: -d, y: -d }, { x: d, y: -d }, { x: d, y: d }, { x: -d, y: d },
+  ]));
+  assert.equal(hull.length, 4);
+  const m = convexMargin(hull, { x: 0, y: 0 });
+  assert.ok(Number.isFinite(m), `裕量必须有限，got ${m}`);
+  assert.ok(Math.abs(m - d) <= d * 1e-9, `裕量应约为 1e307，got ${m}`);
+});
+
+test('超大坐标下凸包正确剔除内部点', () => {
+  const d = 1e307;
+  // 旋转 45° 的方形加一个内部点：溢出会让转向判断退化为 NaN 而错误保留内部点
+  const hull = convexHull([
+    { x: d, y: 0 }, { x: 0, y: d }, { x: -d, y: 0 }, { x: 0, y: -d },
+    { x: 0.4 * d, y: 0.4 * d },
+  ]);
+  assert.equal(hull.length, 4);
+});
+
+test('超大坐标下多边形面积保持正确符号', () => {
+  const d = 1e307;
+  // 一条边穿过原点，鞋带公式各项异号，直接累加会得到 NaN
+  const ccw = [{ x: d, y: -d }, { x: d, y: d }, { x: -d, y: d }];
+  assert.ok(polygonSignedArea(ccw) > 0);
+  assert.ok(polygonSignedArea(ccw.slice().reverse()) < 0);
+});
+
+test('超大坐标下 pointInPolygon 正确识别斜边上的点', () => {
+  const d = 1e307;
+  const tri = [{ x: -d, y: -d }, { x: d, y: -d }, { x: -d, y: d }];
+  assert.equal(pointInPolygon(tri, { x: 0, y: 0 }), true); // 原点恰在斜边上
+  assert.equal(pointInPolygon(tri, { x: -0.5 * d, y: 0 }), true);
+  assert.equal(pointInPolygon(tri, { x: 0.5 * d, y: 0.5 * d }), false);
+});

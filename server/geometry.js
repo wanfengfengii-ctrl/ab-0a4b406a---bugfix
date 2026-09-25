@@ -1,6 +1,11 @@
 // 纯计算几何工具：二维点、有符号距离、凸包、点与简单多边形关系。
 // 所有多边形约定按逆时针(CCW)给出边时，内部位于每条有向边的左侧，
 // 因此“点到边的有符号距离”为正表示在内部、为负表示在外部、为 0 表示恰在边界上。
+//
+// 坐标可以是超大但有限的数值（如 1e307）：坐标之差仍在 double 范围内，
+// 但两个坐标差的乘积会溢出为 Infinity（进而产生 NaN）。凡涉及坐标差乘积的
+// 计算（叉积、面积、投影），这里都采用“先归一化/缩放再相乘”的写法，
+// 保证超大坐标下仍得到有限、符号正确的结果。
 
 export function sub(a, b) {
   return { x: a.x - b.x, y: a.y - b.y };
@@ -8,6 +13,19 @@ export function sub(a, b) {
 
 export function cross(a, b) {
   return a.x * b.y - a.y * b.x;
+}
+
+/**
+ * 两个差向量的叉积 ux*vy - uy*vx 的溢出安全版本。
+ * 常规范围直接计算并原样返回；乘积溢出（坐标差 ~1e307 量级）时按最大分量
+ * 缩放后重算，返回值的符号与真实叉积一致，供只需判断转向/是否为零的调用方使用。
+ */
+function crossDiffs(ux, uy, vx, vy) {
+  const c = ux * vy - uy * vx;
+  if (Number.isFinite(c)) return c;
+  const m = Math.max(Math.abs(ux), Math.abs(uy), Math.abs(vx), Math.abs(vy));
+  if (!(m > 0) || !Number.isFinite(m)) return c;
+  return (ux / m) * (vy / m) - (uy / m) * (vx / m);
 }
 
 export function pointDistance(a, b) {
@@ -22,7 +40,11 @@ export function lineSide(p, a, b) {
   const dy = b.y - a.y;
   const len = Math.hypot(dx, dy);
   if (len === 0) return pointDistance(p, a);
-  return cross({ x: dx, y: dy }, sub(p, a)) / len;
+  // 用单位方向向量参与叉乘：|d|·|p-a| 的乘积在超大坐标下会溢出 double，
+  // 先归一化方向可保证结果始终有限（数学上与 cross(d, p-a)/len 相同）。
+  const ux = dx / len;
+  const uy = dy / len;
+  return ux * (p.y - a.y) - uy * (p.x - a.x);
 }
 
 /**
@@ -31,9 +53,10 @@ export function lineSide(p, a, b) {
 export function distanceToSegment(p, a, b) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  if (len2 === 0) return pointDistance(p, a);
-  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return pointDistance(p, a);
+  // 投影参数 t = ((p-a)·d)/|d|² 改写为 ((p-a)·û)/|d|，避免 |d|² 在超大坐标下溢出
+  let t = ((p.x - a.x) * (dx / len) + (p.y - a.y) * (dy / len)) / len;
   t = Math.max(0, Math.min(1, t));
   return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
@@ -45,7 +68,20 @@ export function polygonSignedArea(poly) {
     const b = poly[(i + 1) % poly.length];
     s += a.x * b.y - b.x * a.y;
   }
-  return s / 2;
+  if (Number.isFinite(s)) return s / 2;
+  // 坐标乘积溢出（坐标 ~1e307）：按最大坐标缩放后重新累加。此时真实面积
+  // 一般已超出 double 范围，返回值保持正确符号（通常为 ±Infinity），
+  // 调用方（ensureCCW、退化判断）只依赖符号或量级。
+  let m = 0;
+  for (const p of poly) m = Math.max(m, Math.abs(p.x), Math.abs(p.y));
+  if (!(m > 0) || !Number.isFinite(m)) return s / 2;
+  let scaled = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % poly.length];
+    scaled += (a.x / m) * (b.y / m) - (b.x / m) * (a.y / m);
+  }
+  return (scaled / 2) * m * m;
 }
 
 /**
@@ -76,13 +112,14 @@ export function pointInPolygon(poly, p) {
     const a = poly[i];
     const b = poly[j];
     const onBoundary =
-      (a.x - p.x) * (b.y - p.y) - (a.y - p.y) * (b.x - p.x) === 0 &&
+      crossDiffs(a.x - p.x, a.y - p.y, b.x - p.x, b.y - p.y) === 0 &&
       Math.min(a.x, b.x) <= p.x && p.x <= Math.max(a.x, b.x) &&
       Math.min(a.y, b.y) <= p.y && p.y <= Math.max(a.y, b.y);
     if (onBoundary) return true;
+    // 先算纵向比例再乘回横差，避免 (b.x-a.x)*(p.y-a.y) 在超大坐标下溢出
     const intersects =
       a.y > p.y !== b.y > p.y &&
-      p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x;
+      p.x < a.x + (b.x - a.x) * ((p.y - a.y) / (b.y - a.y));
     if (intersects) inside = !inside;
   }
   return inside;
@@ -108,8 +145,9 @@ function dedupe(points) {
 export function convexHull(points) {
   const pts = dedupe(points).sort((a, b) => a.x - b.x || a.y - b.y);
   if (pts.length <= 2) return pts;
+  // 转向判断用溢出安全的叉积，超大坐标下不会退化为 Infinity/NaN
   const cross3 = (o, a, b) =>
-    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    crossDiffs(a.x - o.x, a.y - o.y, b.x - o.x, b.y - o.y);
 
   const lower = [];
   for (const p of pts) {

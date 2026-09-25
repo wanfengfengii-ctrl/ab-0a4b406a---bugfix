@@ -76,6 +76,47 @@ test('第三目标：指标完全相同的并列组合，按候选编号字典�
   assert.equal(r.metrics.indices[0], 0);
 });
 
+test('超大但有限的坐标：唯一选择外方形，全部裕量为有限数值', () => {
+  // 坐标 ~1e307：坐标差的乘积超出 double 范围，裁决仍须给出有限、正确的
+  // 选点与稳定裕量（回归：曾因此把内方形判为最优，裕量序列化为 null）。
+  const inner = 9e306;
+  const outer = 1e307;
+  const bound = 1.1e307;
+  const r = solve({
+    rails: [
+      [{ x: -inner, y: -inner }, { x: -outer, y: -outer }],
+      [{ x: inner, y: -inner }, { x: outer, y: -outer }],
+      [{ x: inner, y: inner }, { x: outer, y: outer }],
+      [{ x: -inner, y: inner }, { x: -outer, y: outer }],
+    ],
+    boundary: [
+      { x: -bound, y: -bound }, { x: bound, y: -bound },
+      { x: bound, y: bound }, { x: -bound, y: bound },
+    ],
+    cg: { x: 0, y: 0 },
+    toleranceX: 0,
+    toleranceY: 0,
+    minSpacing: 1,
+  });
+  assert.equal(r.feasible, true);
+  // 外方形最小裕量约 1e307，严格大于内方形约 9e306，唯一选择候选编号 [2,2,2,2]
+  assert.deepEqual(r.selection.map((s) => s.candidateNumber), [2, 2, 2, 2]);
+  assert.deepEqual(r.metrics.indices, [1, 1, 1, 1]);
+  // 四个角点裕量与 minMargin 都必须是有限数值且约为 1e307
+  assert.equal(r.corners.length, 4);
+  for (const c of r.corners) {
+    assert.ok(Number.isFinite(c.margin), `角点 ${c.label} 的裕量必须是有限数值，got ${c.margin}`);
+    assert.ok(Math.abs(c.margin - 1e307) <= 1e307 * 1e-9, `角点 ${c.label} 裕量应约为 1e307，got ${c.margin}`);
+  }
+  assert.ok(Number.isFinite(r.metrics.minMargin), 'minMargin 必须是有限数值');
+  assert.ok(Math.abs(r.metrics.minMargin - 1e307) <= 1e307 * 1e-9);
+  assert.ok(r.metrics.minMargin > 9e306, '外方形裕量应严格大于内方形约 9e306');
+  // JSON 序列化后裕量不得退化为 null
+  const roundTrip = JSON.parse(JSON.stringify(r));
+  assert.ok(roundTrip.corners.every((c) => typeof c.margin === 'number' && Number.isFinite(c.margin)));
+  assert.equal(typeof roundTrip.metrics.minMargin, 'number');
+});
+
 test('间距约束：最小间距无法满足时判定不可行并给出间距证据', () => {
   const r = solve(crossPayload({ minSpacing: 100 }));
   assert.equal(r.feasible, false);
