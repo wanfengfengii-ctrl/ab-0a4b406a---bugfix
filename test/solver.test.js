@@ -148,3 +148,62 @@ test('非数值坐标抛错', () => {
     toleranceX: 1, toleranceY: 1, minSpacing: 1,
   }), /有限数值/);
 });
+
+test('超大有限坐标(1e307 量级)：选外侧候选 [2,2,2,2] 且全部裕量有限', () => {
+  // 标称重心在原点、偏差为 0、最小间距 1；
+  // 内侧候选构成 9e306 方形，外侧候选构成 1e307 方形，批准边界为 1.1e307 方形。
+  const payload = {
+    rails: [
+      [{ x: -9e306, y: -9e306 }, { x: -1e307, y: -1e307 }],
+      [{ x: 9e306, y: -9e306 }, { x: 1e307, y: -1e307 }],
+      [{ x: 9e306, y: 9e306 }, { x: 1e307, y: 1e307 }],
+      [{ x: -9e306, y: 9e306 }, { x: -1e307, y: 1e307 }],
+    ],
+    boundary: [
+      { x: -1.1e307, y: -1.1e307 }, { x: 1.1e307, y: -1.1e307 },
+      { x: 1.1e307, y: 1.1e307 }, { x: -1.1e307, y: 1.1e307 },
+    ],
+    cg: { x: 0, y: 0 },
+    toleranceX: 0,
+    toleranceY: 0,
+    minSpacing: 1,
+  };
+  const r = solve(payload);
+  assert.equal(r.feasible, true);
+  assert.equal(r.evaluatedCombinations, 16);
+  assert.deepEqual(r.metrics.indices, [1, 1, 1, 1]);
+  assert.deepEqual(r.selection.map((s) => s.candidateNumber), [2, 2, 2, 2]);
+
+  // 外侧方形裕量约为 1e307，严格大于内侧方形约 9e306 的裕量
+  assert.ok(Number.isFinite(r.metrics.minMargin), 'minMargin 必须是有限数值');
+  assert.ok(r.metrics.minMargin > 9.5e306 && r.metrics.minMargin <= 1e307,
+    `minMargin 应约为 1e307，实际 ${r.metrics.minMargin}`);
+  assert.equal(r.corners.length, 4);
+  for (const c of r.corners) {
+    assert.ok(Number.isFinite(c.margin), '每个角点裕量必须是有限数值');
+    assert.ok(c.margin > 9.5e306 && c.margin <= 1e307, `角点裕量异常：${c.margin}`);
+  }
+  assert.ok(Number.isFinite(r.metrics.sumDistance), '距离和必须有限');
+  assert.ok(Number.isFinite(r.metrics.minGap), '最小间距必须有限');
+});
+
+test('超大有限坐标：内侧组合也可行但裕量更小（9e306 < 1e307）', () => {
+  const mk = (r) => ({
+    rails: [
+      [{ x: -r, y: -r }], [{ x: r, y: -r }],
+      [{ x: r, y: r }], [{ x: -r, y: r }],
+    ],
+    boundary: [
+      { x: -1.1e307, y: -1.1e307 }, { x: 1.1e307, y: -1.1e307 },
+      { x: 1.1e307, y: 1.1e307 }, { x: -1.1e307, y: 1.1e307 },
+    ],
+    cg: { x: 0, y: 0 }, toleranceX: 0, toleranceY: 0, minSpacing: 1,
+  });
+  const inner = solve(mk(9e306));
+  const outer = solve(mk(1e307));
+  assert.equal(inner.feasible, true);
+  assert.equal(outer.feasible, true);
+  assert.ok(Math.abs(inner.metrics.minMargin - 9e306) / 9e306 < 1e-12);
+  assert.ok(Math.abs(outer.metrics.minMargin - 1e307) / 1e307 < 1e-12);
+  assert.ok(outer.metrics.minMargin > inner.metrics.minMargin);
+});

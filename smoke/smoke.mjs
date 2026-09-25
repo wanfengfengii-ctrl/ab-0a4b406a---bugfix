@@ -41,6 +41,26 @@ const infeasiblePayload = {
   minSpacing: 100, // 任何组合都无法满足
 };
 
+// 超大但有限的坐标（1e307 量级，接近 double 上界）：
+// 内候选 9e306 方形、外候选 1e307 方形、批准边界 1.1e307 方形。
+// 必须唯一选择外侧 [2,2,2,2]，且所有裕量为有限值而非 null。
+const hugePayload = {
+  rails: [
+    [{ x: -9e306, y: -9e306 }, { x: -1e307, y: -1e307 }],
+    [{ x: 9e306, y: -9e306 }, { x: 1e307, y: -1e307 }],
+    [{ x: 9e306, y: 9e306 }, { x: 1e307, y: 1e307 }],
+    [{ x: -9e306, y: 9e306 }, { x: -1e307, y: 1e307 }],
+  ],
+  boundary: [
+    { x: -1.1e307, y: -1.1e307 }, { x: 1.1e307, y: -1.1e307 },
+    { x: 1.1e307, y: 1.1e307 }, { x: -1.1e307, y: 1.1e307 },
+  ],
+  cg: { x: 0, y: 0 },
+  toleranceX: 0,
+  toleranceY: 0,
+  minSpacing: 1,
+};
+
 async function waitReady(proc, deadlineMs = 10000) {
   const start = Date.now();
   while (Date.now() - start < deadlineMs) {
@@ -108,8 +128,30 @@ async function main() {
     check('附带最接近失败约束的证据', !!bad.evidence && bad.evidence.candidateNumbers.length === 4);
     check('证据含可读 message', typeof bad.message === 'string' && bad.message.length > 0);
 
-    console.log('6) POST 非法输入返回 422');
-    const invResp = await fetch(`${BASE}/api/fixture-plans`, {
+    console.log('6) POST /api/fixture-plans 超大有限坐标（1e307 量级）');
+    const hugeResp = await fetch(`${BASE}/api/fixture-plans`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(hugePayload),
+    });
+    check('返回 200', hugeResp.status === 200, `status=${hugeResp.status}`);
+    const huge = await hugeResp.json();
+    check('feasible=true', huge.feasible === true);
+    check('唯一选择外侧候选 [2,2,2,2]',
+      JSON.stringify(huge.metrics?.indices) === '[1,1,1,1]',
+      `got=${JSON.stringify(huge.metrics?.indices)}`);
+    check('minMargin 为有限数值且约为 1e307',
+      Number.isFinite(huge.metrics?.minMargin) &&
+        huge.metrics.minMargin > 9.5e306 && huge.metrics.minMargin <= 1e307,
+      `got=${huge.metrics?.minMargin}`);
+    check('四个角点裕量均为有限数值',
+      Array.isArray(huge.corners) && huge.corners.length === 4 &&
+        huge.corners.every((c) => Number.isFinite(c.margin) && c.margin > 9.5e306),
+      `got=${JSON.stringify(huge.corners?.map((c) => c.margin))}`);
+    check('其他指标（距离和/间距）保持有限',
+      Number.isFinite(huge.metrics?.sumDistance) && Number.isFinite(huge.metrics?.minGap));
+
+    console.log('7) POST 非法输入返回 422');    const invResp = await fetch(`${BASE}/api/fixture-plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ rails: [], boundary: [], cg: { x: 0, y: 0 } }),
@@ -118,7 +160,7 @@ async function main() {
     const inv = await invResp.json();
     check('422 含错误说明', typeof inv.detail === 'string' && inv.detail.length > 0);
 
-    console.log('7) POST 非法 JSON 返回 400');
+    console.log('8) POST 非法 JSON 返回 400');
     const junkResp = await fetch(`${BASE}/api/fixture-plans`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
